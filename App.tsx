@@ -1,17 +1,21 @@
 import { StatusBar } from 'expo-status-bar'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { ComponentProps, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   StyleSheet,
   Text,
   View,
   Pressable,
   SafeAreaView,
-  FlatList,
   TextInput,
   Alert,
   Platform,
   ScrollView,
+  StatusBar as RNStatusBar,
+  FlatList,
+  Dimensions,
+  Share,
 } from 'react-native'
+import { Feather } from '@expo/vector-icons'
 import AsyncStorage from '@react-native-async-storage/async-storage'
 import { defaultRules } from './src/config/rules'
 import { DaySummary, WorkSession, summarizeDay, summarizeWeek, toYMD, PaySummary, summarizePayWeek, RulesConfig, RulesOverride, hoursBetween, getWeekDays, dayBreakdown, DayBreakdown, mergeRules } from './src/utils/time'
@@ -24,6 +28,8 @@ const STORAGE_KEY_AUTH = 'babylon.auth'
 const STORAGE_KEY_USERS = 'babylon.users'
 
 type Role = 'user' | 'admin'
+type TabRoute = 'dashboard' | 'settings' | 'schedule' | 'myteam' | 'directory' | 'whosin' | 'pto' | 'timecards' | 'profile'
+type FeatherIconName = ComponentProps<typeof Feather>['name']
 type AuthState = { role: Role; userId?: string } | null
 type User = {
   id: string
@@ -35,7 +41,30 @@ type User = {
   status?: 'active' | 'inactive'
   code?: string
   terms?: RulesOverride
+  department?: string
 }
+type Assignment = { shift: string; location: string; assigneeId?: string; assigneeName?: string }
+type PTORequest = {
+  id: string
+  employeeId: string
+  type: 'Vacation' | 'Sick' | 'Personal'
+  startDate: string
+  endDate: string
+  hours: number
+  note?: string
+  status: 'Pending' | 'Approved' | 'Denied'
+}
+
+const TAB_ITEMS: { key: TabRoute; label: string; icon: FeatherIconName; adminOnly?: boolean }[] = [
+  { key: 'dashboard', label: 'Dashboard', icon: 'grid' },
+  { key: 'settings', label: 'Settings', icon: 'sliders', adminOnly: true },
+  { key: 'schedule', label: 'Schedule', icon: 'calendar', adminOnly: true },
+  { key: 'myteam', label: 'My Team', icon: 'users', adminOnly: true },
+  { key: 'directory', label: 'Directory', icon: 'book', adminOnly: true },
+  { key: 'whosin', label: "Who's In", icon: 'clock', adminOnly: true },
+  { key: 'pto', label: 'PTO', icon: 'umbrella', adminOnly: true },
+  { key: 'timecards', label: 'Time Cards', icon: 'file-text', adminOnly: true },
+]
 
 export default function App() {
   const [sessions, setSessions] = useState<WorkSession[]>([])
@@ -44,6 +73,10 @@ export default function App() {
   const [rules, setRules] = useState<RulesConfig>(defaultRules)
   const [auth, setAuth] = useState<AuthState>(null)
   const [users, setUsers] = useState<User[]>([])
+  const [booting, setBooting] = useState(true)
+  const [scheduleAssignments, setScheduleAssignments] = useState<Record<string, Assignment>>({})
+  const [ptoRequests, setPtoRequests] = useState<PTORequest[]>([])
+  const [profileFocus, setProfileFocus] = useState<'details' | 'requests'>('details')
   const sessionsForCurrentUser = useMemo(
     () => (auth?.role === 'user' && auth.userId ? sessions.filter((s) => s.userId === auth.userId) : sessions),
     [sessions, auth],
@@ -59,7 +92,7 @@ export default function App() {
   const viewerRules = useMemo(() => (auth?.role === 'user' ? resolveRulesForUser(auth.userId) : rules), [auth, resolveRulesForUser, rules])
   const weekSummary = useMemo(() => summarizeWeek(sessionsForCurrentUser, viewerRules), [sessionsForCurrentUser, viewerRules])
   const paySummary: PaySummary = useMemo(() => summarizePayWeek(sessionsForCurrentUser, viewerRules), [sessionsForCurrentUser, viewerRules])
-  const [tab, setTab] = useState<'dashboard' | 'schedule' | 'settings' | 'myteam' | 'directory' | 'whosin' | 'pto' | 'timecards'>('dashboard')
+  const [tab, setTab] = useState<TabRoute>('dashboard')
 
   useEffect(() => {
     ;(async () => {
@@ -74,10 +107,10 @@ export default function App() {
         setRules(r ? normalizeRules(JSON.parse(r)) : defaultRules)
         setAuth(au ? JSON.parse(au) : null)
         const defaultUsers: User[] = [
-          { id: 'admin-1', empNo: '0001', name: 'Lei, Nicky', username: 'nicky.lei', role: 'admin', status: 'active' },
-          { id: 'u-9016', empNo: '9016', name: 'Acevedo, Elkin', username: 'acevedoelkin764@gmail.com', role: 'user', manager: 'Lei, Nicky', status: 'active', code: 'EA' },
-          { id: 'u-9017', empNo: '9017', name: 'Acevedo, Felipe', username: 'felipeacevedo142@gmail.com', role: 'user', manager: 'Lei, Nicky', status: 'active', code: 'FA' },
-          { id: 'u-9002', empNo: '9002', name: 'Bonilla, Sandra', username: 'bonilla.sandra', role: 'user', manager: 'Lei, Nicky', status: 'active', code: 'SB' },
+          { id: 'admin-1', empNo: '0001', name: 'Lei, Nicky', username: 'nicky.lei', role: 'admin', status: 'active', department: 'Administration' },
+          { id: 'u-9016', empNo: '9016', name: 'Acevedo, Elkin', username: 'acevedoelkin764@gmail.com', role: 'user', manager: 'Lei, Nicky', status: 'active', code: 'EA', department: 'Operations' },
+          { id: 'u-9017', empNo: '9017', name: 'Acevedo, Felipe', username: 'felipeacevedo142@gmail.com', role: 'user', manager: 'Lei, Nicky', status: 'active', code: 'FA', department: 'Operations' },
+          { id: 'u-9002', empNo: '9002', name: 'Bonilla, Sandra', username: 'bonilla.sandra', role: 'user', manager: 'Lei, Nicky', status: 'active', code: 'SB', department: 'Finance' },
         ]
         setUsers(us ? JSON.parse(us) : defaultUsers)
         if (!us) await AsyncStorage.setItem(STORAGE_KEY_USERS, JSON.stringify(defaultUsers))
@@ -87,6 +120,8 @@ export default function App() {
         setRules(defaultRules)
         setAuth(null)
         setUsers([])
+      } finally {
+        setBooting(false)
       }
     })()
   }, [])
@@ -100,6 +135,16 @@ export default function App() {
     globalSessionsRefAll.rules = rules
     globalUsersRef.users = users
   }, [sessions, sessionsForCurrentUser, users, active, rules, viewerRules])
+
+  useEffect(() => {
+    if (users.length === 0 || ptoRequests.length > 0) return
+    const sampleUser = users.find((u) => u.role === 'user')
+    if (sampleUser) {
+      setPtoRequests([
+        { id: 'pto-sample', employeeId: sampleUser.id, type: 'Vacation', startDate: weekDaysAgo(2), endDate: weekDaysAgo(1), hours: 16, status: 'Approved', note: 'Family trip' },
+      ])
+    }
+  }, [users, ptoRequests.length])
 
   async function checkIn() {
     if (active) return
@@ -133,10 +178,13 @@ export default function App() {
 
   function renderSession(item: WorkSession) {
     const date = toYMD(new Date(item.checkIn))
+    const dayLabel = new Date(item.checkIn).toLocaleDateString(undefined, { weekday: 'short' })
     const sum = summarizeDay(date, [item], resolveRulesForUser(item.userId))
     return (
-      <View style={styles.sessionRow}>
-        <Text style={styles.sessionDate}>{date}</Text>
+      <View key={item.id} style={styles.sessionRow}>
+        <Text style={styles.sessionDate}>
+          {dayLabel} • {date}
+        </Text>
         <Text style={styles.sessionHours}>{sum.totalHours.toFixed(2)}h</Text>
         {sum.isHoliday && <Text style={styles.badgeHoliday}>Holiday</Text>}
         {sum.isEarlyCheckout && <Text style={styles.badgeEarly}>Early</Text>}
@@ -147,10 +195,38 @@ export default function App() {
   const isHolidayToday = todaySummary?.isHoliday
   const checkedIn = !!active && (!!auth?.userId ? active.userId === auth.userId : true)
   const isAdmin = auth?.role === 'admin'
-  const currentTab = isAdmin ? tab : 'dashboard'
+  const currentTab = isAdmin ? tab : tab === 'profile' ? 'profile' : 'dashboard'
+  const baseNavItems = useMemo(() => {
+    if (isAdmin) return TAB_ITEMS
+    return [
+      { key: 'dashboard', label: 'Dashboard', icon: 'grid' as FeatherIconName },
+      { key: 'profile', label: 'Profile', icon: 'user' as FeatherIconName },
+    ]
+  }, [isAdmin])
+  const bottomNavItems = useMemo(() => baseNavItems.filter((item) => (item.adminOnly ? isAdmin : true)), [baseNavItems, isAdmin])
+  const scrollPaddingBottom = useMemo(() => (Platform.OS === 'ios' ? 200 : 160), [])
+  const todayKey = toYMD(new Date())
+  const viewerAssignment = useMemo(() => {
+    if (!auth || auth.role !== 'user') return null
+    const assign = scheduleAssignments[todayKey]
+    if (assign?.assigneeId === auth.userId) return assign
+    return null
+  }, [auth, scheduleAssignments, todayKey])
+  const viewerAssignmentName = viewerAssignment?.assigneeId ? users.find((u) => u.id === viewerAssignment.assigneeId)?.name : viewerAssignment?.assigneeName
+  const handleTabSelect = useCallback(
+    (nextTab: TabRoute, focus: 'details' | 'requests' = 'details') => {
+      if (!isAdmin && nextTab === 'profile') {
+        setProfileFocus(focus)
+      }
+      setTab(nextTab)
+    },
+    [isAdmin],
+  )
 
   useEffect(() => {
-    if (!isAdmin && tab !== 'dashboard') {
+    if (isAdmin && !TAB_ITEMS.find((item) => item.key === tab)) {
+      setTab('dashboard')
+    } else if (!isAdmin && tab !== 'dashboard' && tab !== 'profile') {
       setTab('dashboard')
     }
   }, [isAdmin, tab])
@@ -299,42 +375,389 @@ export default function App() {
 
   function ScheduleView() {
     const weekDays = getWeekDays()
-    const schedule = weekDays.map((date) => ({
-      date,
-      shift: 'Unassigned',
-      location: 'Select job site',
-      note: 'Tap assign to build schedule',
-    }))
+    const [editingDate, setEditingDate] = useState<string | null>(null)
+    const [assignForm, setAssignForm] = useState<Assignment>({ shift: '', location: '', assigneeId: undefined, assigneeName: '' })
+    const [lastPublishedAt, setLastPublishedAt] = useState<string | null>(null)
     const formatDate = (iso: string) => new Date(iso).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })
+    const employeeList = users.filter((u) => u.role === 'user')
+
+    const handleAssign = (date: string) => {
+      const existing = scheduleAssignments[date] ?? { shift: '', location: '', assigneeId: undefined, assigneeName: '' }
+      setAssignForm(existing)
+      setEditingDate(date)
+    }
+
+    const saveAssignment = () => {
+      if (!editingDate) return
+      setScheduleAssignments((prev) => ({ ...prev, [editingDate]: assignForm }))
+      setEditingDate(null)
+      setAssignForm({ shift: '', location: '', assigneeId: undefined, assigneeName: '' })
+    }
+
+    const shareSchedule = async () => {
+      const lines = weekDays.map((date) => {
+        const entry = scheduleAssignments[date]
+        const assignee = entry?.assigneeId ? users.find((u) => u.id === entry.assigneeId)?.name : entry?.assigneeName || 'Unassigned'
+        const summary = entry ? `${entry.shift || 'Unassigned'} • ${entry.location || 'No location'} • ${assignee}` : 'Unassigned'
+        return `${formatDate(date)}: ${summary}`
+      })
+      try {
+        await Share.share({ message: `Weekly schedule\n\n${lines.join('\n')}` })
+      } catch (err) {
+        Alert.alert('Unable to share', 'Please try again later.')
+      }
+    }
+
+    const publishWeek = () => {
+      setLastPublishedAt(new Date().toLocaleString())
+      Alert.alert('Schedule published', 'Week shared internally.')
+    }
+
     return (
       <View style={styles.settingsContainer}>
         <View style={styles.contentCard}>
           <Text style={styles.cardTitle}>Weekly Schedule</Text>
           <Text style={styles.cardSubtitle}>Publish shifts and keep everyone aligned.</Text>
           <View style={styles.scheduleActions}>
-            <Pressable style={[styles.btnCheckin, styles.scheduleActionSpacer]}>
+            <Pressable style={[styles.btnCheckin, styles.scheduleActionSpacer]} onPress={publishWeek}>
               <Text style={styles.btnText}>Publish Week</Text>
             </Pressable>
-            <Pressable style={styles.outlineBtn}>
+            <Pressable style={styles.outlineBtn} onPress={shareSchedule}>
               <Text style={styles.outlineBtnText}>Share to Team</Text>
             </Pressable>
           </View>
+          {lastPublishedAt && <Text style={styles.schedulePublished}>Last published {lastPublishedAt}</Text>}
           <View>
-            {schedule.map((entry) => (
-              <View key={entry.date} style={styles.scheduleRow}>
-                <View style={styles.scheduleDate}>
-                  <Text style={styles.scheduleDay}>{formatDate(entry.date)}</Text>
-                  <Text style={styles.scheduleMeta}>{entry.note}</Text>
+            {weekDays.map((date) => {
+              const entry = scheduleAssignments[date]
+              const assigneeName = entry?.assigneeId ? users.find((u) => u.id === entry.assigneeId)?.name : entry?.assigneeName
+              return (
+                <View key={date} style={styles.scheduleRow}>
+                  <View style={styles.scheduleDate}>
+                    <Text style={styles.scheduleDay}>{formatDate(date)}</Text>
+                    <Text style={styles.scheduleMeta}>{entry?.location || 'Tap assign to build schedule'}</Text>
+                  </View>
+                  <View style={styles.scheduleDetails}>
+                    <Text style={styles.scheduleShift}>{entry?.shift || 'Unassigned'}</Text>
+                    <Text style={styles.scheduleMeta}>{assigneeName ? `Assigned to ${assigneeName}` : 'No assignee yet'}</Text>
+                  </View>
+                  <Pressable style={styles.scheduleAssignBtn} onPress={() => handleAssign(date)}>
+                    <Text style={styles.scheduleAssignText}>Assign</Text>
+                  </Pressable>
+                  {editingDate === date && (
+                    <View style={styles.assignForm}>
+                      <TextInput style={styles.formInput} placeholder="Shift (e.g. 8a-4p)" value={assignForm.shift} onChangeText={(text) => setAssignForm((prev) => ({ ...prev, shift: text }))} />
+                      <TextInput style={styles.formInput} placeholder="Location / job site" value={assignForm.location} onChangeText={(text) => setAssignForm((prev) => ({ ...prev, location: text }))} />
+                      <TextInput
+                        style={styles.formInput}
+                        placeholder="Assignee name"
+                        value={assignForm.assigneeName}
+                        onChangeText={(text) => setAssignForm((prev) => ({ ...prev, assigneeName: text, assigneeId: undefined }))}
+                      />
+                      {employeeList.length > 0 && (
+                        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.assignChips}>
+                          {employeeList.map((emp) => (
+                            <Pressable
+                              key={emp.id}
+                              style={[styles.chip, assignForm.assigneeId === emp.id && styles.chipActive]}
+                              onPress={() => setAssignForm((prev) => ({ ...prev, assigneeId: emp.id, assigneeName: emp.name }))}
+                            >
+                              <Text style={[styles.chipText, assignForm.assigneeId === emp.id && styles.chipTextActive]}>{emp.name}</Text>
+                            </Pressable>
+                          ))}
+                        </ScrollView>
+                      )}
+                      <View style={styles.assignActions}>
+                        <Pressable style={[styles.outlineBtn, styles.assignActionSpacer]} onPress={() => setEditingDate(null)}>
+                          <Text style={styles.outlineBtnText}>Cancel</Text>
+                        </Pressable>
+                        <Pressable style={styles.btnCheckin} onPress={saveAssignment}>
+                          <Text style={styles.btnText}>Save Assignment</Text>
+                        </Pressable>
+                      </View>
+                    </View>
+                  )}
                 </View>
-                <View style={styles.scheduleDetails}>
-                  <Text style={styles.scheduleShift}>{entry.shift}</Text>
-                  <Text style={styles.scheduleMeta}>{entry.location}</Text>
+              )
+            })}
+          </View>
+        </View>
+      </View>
+    )
+  }
+
+  function ProfileView({ focus }: { focus: 'details' | 'requests' }) {
+    if (!auth || auth.role !== 'user') return null
+    const me = users.find((u) => u.id === auth.userId)
+    const [leaveType, setLeaveType] = useState('Vacation')
+    const [leaveDescription, setLeaveDescription] = useState('')
+    const [leaveStart, setLeaveStart] = useState('')
+    const [leaveEnd, setLeaveEnd] = useState('')
+    const [leaveHours, setLeaveHours] = useState('')
+    const [leaveError, setLeaveError] = useState<string | null>(null)
+    const myRequests = ptoRequests.filter((r) => r.employeeId === auth.userId)
+    const upcomingAssignments = useMemo(() => {
+      return Object.entries(scheduleAssignments)
+        .filter(([_, assignment]) => assignment.assigneeId === auth.userId)
+        .sort(([a], [b]) => (a > b ? 1 : -1))
+    }, [scheduleAssignments, auth.userId])
+
+    const submitLeaveRequest = () => {
+      if (!leaveStart || !leaveEnd || (!leaveHours && leaveType.toLowerCase() === 'break')) {
+        setLeaveError('Please provide start/end dates and hours for short breaks.')
+        return
+      }
+      const hoursValue = Number(leaveHours) || 0
+      const request: PTORequest = {
+        id: `user-pto-${Date.now()}`,
+        employeeId: auth.userId!,
+        type: (leaveType as PTORequest['type']) || 'Vacation',
+        startDate: leaveStart,
+        endDate: leaveEnd,
+        hours: hoursValue,
+        note: leaveDescription,
+        status: 'Pending',
+      }
+      setPtoRequests((prev) => [...prev, request])
+      setLeaveType('Vacation')
+      setLeaveDescription('')
+      setLeaveStart('')
+      setLeaveEnd('')
+      setLeaveHours('')
+      setLeaveError(null)
+      Alert.alert('Request submitted', 'Your manager will review this PTO request.')
+    }
+
+    if (!me) {
+      return (
+        <View style={styles.settingsContainer}>
+          <View style={styles.contentCard}>
+            <Text style={styles.cardTitle}>My Profile</Text>
+            <Text style={styles.subBrand}>We could not load your profile details yet.</Text>
+          </View>
+        </View>
+      )
+    }
+
+    const leaveTypes = ['Vacation', 'Sick', 'Personal', 'Off Time', 'Break']
+    const profileCards = [
+      <View key="details" style={styles.contentCard}>
+        <Text style={styles.cardTitle}>My Profile</Text>
+        <Text style={styles.cardSubtitle}>Details visible to your managers.</Text>
+        <View style={styles.profileInfoRow}>
+          <Text style={styles.profileLabel}>Name</Text>
+          <Text style={styles.profileValue}>{me?.name || 'Unknown'}</Text>
+        </View>
+        <View style={styles.profileInfoRow}>
+          <Text style={styles.profileLabel}>Employee #</Text>
+          <Text style={styles.profileValue}>{me?.empNo || '—'}</Text>
+        </View>
+        <View style={styles.profileInfoRow}>
+          <Text style={styles.profileLabel}>Username</Text>
+          <Text style={styles.profileValue}>{me?.username || '—'}</Text>
+        </View>
+        <View style={styles.profileInfoRow}>
+          <Text style={styles.profileLabel}>Manager</Text>
+          <Text style={styles.profileValue}>{me?.manager || 'Unassigned'}</Text>
+        </View>
+        <View style={styles.profileInfoRow}>
+          <Text style={styles.profileLabel}>Role</Text>
+          <Text style={styles.profileValue}>{me?.role || '—'}</Text>
+        </View>
+        <View style={styles.profileInfoRow}>
+          <Text style={styles.profileLabel}>Department</Text>
+          <Text style={styles.profileValue}>{me?.department || (me.role === 'admin' ? 'Administration' : 'Operations')}</Text>
+        </View>
+        <View style={styles.profileInfoRow}>
+          <Text style={styles.profileLabel}>Employee Code</Text>
+          <Text style={styles.profileValue}>{me?.code || '—'}</Text>
+        </View>
+      </View>,
+      <View key="schedule" style={styles.contentCard}>
+        <Text style={styles.cardTitle}>My Schedule</Text>
+        {upcomingAssignments.length === 0 ? (
+          <Text style={styles.subBrand}>No assignments saved yet.</Text>
+        ) : (
+          upcomingAssignments.map(([date, entry]) => (
+            <View key={date} style={styles.profileAssignmentRow}>
+              <Text style={styles.profileAssignmentDate}>{date}</Text>
+              <Text style={styles.profileAssignmentText}>
+                {entry.shift || 'Shift TBD'} • {entry.location || 'Location TBD'}
+              </Text>
+            </View>
+          ))
+        )}
+      </View>,
+      <View key="request" style={styles.contentCard}>
+        <Text style={styles.cardTitle}>Request Time Off</Text>
+        <Text style={styles.cardSubtitle}>Send a PTO or break request to your manager.</Text>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.assignChips}>
+          {leaveTypes.map((type) => (
+            <Pressable key={type} style={[styles.chip, leaveType === type && styles.chipActive]} onPress={() => setLeaveType(type)}>
+              <Text style={[styles.chipText, leaveType === type && styles.chipTextActive]}>{type}</Text>
+            </Pressable>
+          ))}
+        </ScrollView>
+        <View style={styles.formGrid}>
+          <View style={styles.formField}>
+            <Text style={styles.formLabel}>Start Date</Text>
+            <TextInput style={styles.formInput} placeholder="YYYY-MM-DD" value={leaveStart} onChangeText={setLeaveStart} />
+          </View>
+          <View style={styles.formField}>
+            <Text style={styles.formLabel}>End Date</Text>
+            <TextInput style={styles.formInput} placeholder="YYYY-MM-DD" value={leaveEnd} onChangeText={setLeaveEnd} />
+          </View>
+          <View style={styles.formField}>
+            <Text style={styles.formLabel}>Hours (optional)</Text>
+            <TextInput style={styles.formInput} placeholder="4" keyboardType="numeric" value={leaveHours} onChangeText={setLeaveHours} />
+          </View>
+        </View>
+        <View style={styles.formFieldFull}>
+          <Text style={styles.formLabel}>Reason / Description</Text>
+          <TextInput
+            multiline
+            style={[styles.formInput, styles.leaveReasonInput]}
+            placeholder="Why do you need time off?"
+            value={leaveDescription}
+            onChangeText={setLeaveDescription}
+          />
+        </View>
+        {leaveError && <Text style={styles.roleWarningText}>{leaveError}</Text>}
+        <Pressable style={[styles.btnCheckin, styles.ptoRequestSubmit]} onPress={submitLeaveRequest}>
+          <Text style={styles.btnText}>Submit Request</Text>
+        </Pressable>
+      </View>,
+      <View key="myrequests" style={styles.contentCard}>
+        <Text style={styles.cardTitle}>My Requests</Text>
+        {myRequests.length === 0 ? (
+          <Text style={styles.subBrand}>You have not logged any PTO requests.</Text>
+        ) : (
+          myRequests
+            .slice()
+            .reverse()
+            .map((req) => (
+              <View key={req.id} style={styles.ptoRequestRow}>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.ptoRequestName}>{req.type}</Text>
+                  <Text style={styles.ptoRequestMeta}>
+                    {req.startDate} → {req.endDate} • {req.hours}h
+                  </Text>
+                  {!!req.note && <Text style={styles.ptoRequestMeta}>{req.note}</Text>}
                 </View>
-                <Pressable style={styles.scheduleAssignBtn}>
-                  <Text style={styles.scheduleAssignText}>Assign</Text>
-                </Pressable>
+                <Text style={[styles.ptoStatusPill, styles[`pto${req.status}` as const]]}>{req.status}</Text>
               </View>
-            ))}
+            ))
+        )}
+      </View>,
+    ]
+
+    const orderedCards = focus === 'requests' ? [profileCards[2], profileCards[3], profileCards[0], profileCards[1]] : profileCards
+
+    return <View style={styles.settingsContainer}>{orderedCards}</View>
+  }
+
+  function PTOView() {
+    const employeeList = users.filter((u) => u.role === 'user')
+    const [requestForm, setRequestForm] = useState({ employeeId: employeeList[0]?.id || '', type: 'Vacation', startDate: '', endDate: '', hours: '' })
+
+    const addRequest = () => {
+      if (!requestForm.employeeId || !requestForm.startDate || !requestForm.endDate || !requestForm.hours) {
+        Alert.alert('Missing info', 'Please complete all fields before logging PTO.')
+        return
+      }
+      const next: PTORequest = {
+        id: `pto-${Date.now()}`,
+        employeeId: requestForm.employeeId,
+        type: (requestForm.type as PTORequest['type']) || 'Vacation',
+        startDate: requestForm.startDate,
+        endDate: requestForm.endDate,
+        hours: Number(requestForm.hours),
+        status: 'Pending',
+      }
+      setPtoRequests((prev) => [...prev, next])
+      setRequestForm((prev) => ({ ...prev, startDate: '', endDate: '', hours: '' }))
+    }
+
+    const updateStatus = (id: string, status: PTORequest['status']) => setPtoRequests((prev) => prev.map((req) => (req.id === id ? { ...req, status } : req)))
+
+    const pending = ptoRequests.filter((r) => r.status === 'Pending')
+    const approvalRate = ptoRequests.length ? Math.round((ptoRequests.filter((r) => r.status === 'Approved').length / ptoRequests.length) * 100) : 0
+
+    return (
+      <View style={styles.settingsContainer}>
+        <View style={styles.contentCard}>
+          <Text style={styles.cardTitle}>Paid Time Off</Text>
+          <Text style={styles.cardSubtitle}>Log requests, track balances, and keep managers aligned.</Text>
+          <View style={styles.ptoSummaryGrid}>
+            <View style={styles.ptoSummaryCard}>
+              <Text style={styles.statLabel}>Open Requests</Text>
+              <Text style={styles.statValue}>{pending.length}</Text>
+              <Text style={styles.statMeta}>Awaiting approval</Text>
+            </View>
+            <View style={styles.ptoSummaryCard}>
+              <Text style={styles.statLabel}>Approval Rate</Text>
+              <Text style={styles.statValue}>{approvalRate}%</Text>
+              <Text style={styles.statMeta}>Year to date</Text>
+            </View>
+          </View>
+          <View style={styles.ptoRequestForm}>
+            <Text style={styles.formLabel}>New Request</Text>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.assignChips}>
+              {employeeList.map((u) => (
+                <Pressable key={u.id} style={[styles.chip, requestForm.employeeId === u.id && styles.chipActive]} onPress={() => setRequestForm((prev) => ({ ...prev, employeeId: u.id }))}>
+                  <Text style={[styles.chipText, requestForm.employeeId === u.id && styles.chipTextActive]}>{u.name}</Text>
+                </Pressable>
+              ))}
+            </ScrollView>
+            <View style={styles.formGrid}>
+              <View style={styles.formField}>
+                <Text style={styles.formLabel}>Type</Text>
+                <TextInput style={styles.formInput} value={requestForm.type} onChangeText={(text) => setRequestForm((prev) => ({ ...prev, type: text }))} placeholder="Vacation" />
+              </View>
+              <View style={styles.formField}>
+                <Text style={styles.formLabel}>Start Date</Text>
+                <TextInput style={styles.formInput} placeholder="YYYY-MM-DD" value={requestForm.startDate} onChangeText={(text) => setRequestForm((prev) => ({ ...prev, startDate: text }))} />
+              </View>
+              <View style={styles.formField}>
+                <Text style={styles.formLabel}>End Date</Text>
+                <TextInput style={styles.formInput} placeholder="YYYY-MM-DD" value={requestForm.endDate} onChangeText={(text) => setRequestForm((prev) => ({ ...prev, endDate: text }))} />
+              </View>
+              <View style={styles.formField}>
+                <Text style={styles.formLabel}>Hours</Text>
+                <TextInput style={styles.formInput} placeholder="8" keyboardType="numeric" value={requestForm.hours} onChangeText={(text) => setRequestForm((prev) => ({ ...prev, hours: text }))} />
+              </View>
+            </View>
+            <Pressable style={[styles.btnCheckin, styles.ptoRequestSubmit]} onPress={addRequest}>
+              <Text style={styles.btnText}>Log Request</Text>
+            </Pressable>
+          </View>
+          <View style={styles.ptoRequestList}>
+            {ptoRequests.map((req) => {
+              const employee = users.find((u) => u.id === req.employeeId)
+              return (
+                <View key={req.id} style={styles.ptoRequestRow}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.ptoRequestName}>{employee?.name || 'Team member'}</Text>
+                    <Text style={styles.ptoRequestMeta}>
+                      {req.type} • {req.startDate} → {req.endDate} • {req.hours}h
+                    </Text>
+                  </View>
+                  <View style={styles.ptoRequestStatus}>
+                    <Text style={[styles.ptoStatusPill, styles[`pto${req.status}` as const]]}>{req.status}</Text>
+                    {req.status === 'Pending' && (
+                      <View style={styles.ptoRequestActions}>
+                        <Pressable style={styles.linkBtn} onPress={() => updateStatus(req.id, 'Approved')}>
+                          <Text style={styles.linkBtnText}>Approve</Text>
+                        </Pressable>
+                        <Pressable style={styles.linkBtn} onPress={() => updateStatus(req.id, 'Denied')}>
+                          <Text style={styles.linkBtnText}>Deny</Text>
+                        </Pressable>
+                      </View>
+                    )}
+                  </View>
+                </View>
+              )
+            })}
           </View>
         </View>
       </View>
@@ -392,11 +815,13 @@ export default function App() {
                   .filter((s) => !s.checkOut)
                   .map((s) => {
                     const u = users.find((x) => x.id === s.userId)
+                    const punchStart = new Date(s.checkIn)
+                    const punchLabel = `${punchStart.toLocaleDateString(undefined, { weekday: 'short' })} • ${punchStart.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
                     return (
                       <View key={`open-${s.id}`} style={styles.activityRow}>
                         <View>
                           <Text style={styles.activityName}>{u?.name || s.userId}</Text>
-                          <Text style={styles.activityMeta}>Clocked in {new Date(s.checkIn).toLocaleTimeString()}</Text>
+                          <Text style={styles.activityMeta}>{punchLabel}</Text>
                         </View>
                         <Text style={styles.activityBadge}>IN</Text>
                       </View>
@@ -405,11 +830,13 @@ export default function App() {
               )}
               {recentPunches.map((s) => {
                 const u = users.find((x) => x.id === s.userId)
+                const punchDate = new Date(s.checkIn)
+                const dateLabel = `${punchDate.toLocaleDateString(undefined, { weekday: 'short' })} • ${toYMD(punchDate)}`
                 return (
                   <View key={s.id} style={styles.activityRow}>
                     <View>
                       <Text style={styles.activityName}>{u?.name || s.userId}</Text>
-                      <Text style={styles.activityMeta}>{toYMD(new Date(s.checkIn))}</Text>
+                      <Text style={styles.activityMeta}>{dateLabel}</Text>
                     </View>
                     <Text style={styles.activityValue}>{hoursBetween(s.checkIn, s.checkOut).toFixed(2)}h</Text>
                   </View>
@@ -427,6 +854,155 @@ export default function App() {
       <View style={styles.settingsContainer}>
         <SettingsView />
         <EmployeeOverrideCard />
+      </View>
+    )
+  }
+
+  function BottomNavigation() {
+    if (bottomNavItems.length === 0) return null
+    const isIOS = Platform.OS === 'ios'
+    const showInfiniteNav = isAdmin && bottomNavItems.length > 1
+    const windowWidth = Dimensions.get('window').width
+    const chipWidth = 140
+    const chipSpacing = 12
+    const itemWidth = chipWidth + chipSpacing
+    const horizontalPadding = Math.max((windowWidth - chipWidth) / 2, 12)
+    if (!showInfiniteNav) {
+      if (bottomNavItems.length <= 3) {
+        return (
+          <View style={[styles.bottomNav, isIOS ? styles.bottomNavIOS : styles.bottomNavAndroid]}>
+            <View style={styles.bottomNavStaticRow}>
+              {bottomNavItems.map((item) => {
+                const focused = currentTab === item.key
+                return (
+                  <Pressable
+                    key={item.key}
+                    style={[styles.bottomNavChip, focused && styles.bottomNavChipActive]}
+                    accessibilityRole="button"
+                    accessibilityState={focused ? { selected: true } : undefined}
+                    onPress={() => handleTabSelect(item.key as TabRoute)}
+                  >
+                    <Feather name={item.icon} size={20} color={focused ? colors.white : colors.dirPrimary} style={styles.bottomNavChipIcon} />
+                    <Text style={[styles.bottomNavChipText, focused && styles.bottomNavChipTextActive]}>{item.label}</Text>
+                  </Pressable>
+                )
+              })}
+            </View>
+          </View>
+        )
+      }
+      return (
+        <View style={[styles.bottomNav, isIOS ? styles.bottomNavIOS : styles.bottomNavAndroid]}>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={[styles.bottomNavScroll, { paddingHorizontal: horizontalPadding }]}
+            keyboardShouldPersistTaps="handled"
+          >
+            {bottomNavItems.map((item) => {
+              const focused = currentTab === item.key
+              return (
+                <Pressable
+                  key={item.key}
+                  style={[styles.bottomNavChip, focused && styles.bottomNavChipActive]}
+                  accessibilityRole="button"
+                  accessibilityState={focused ? { selected: true } : undefined}
+                  onPress={() => handleTabSelect(item.key as TabRoute)}
+                >
+                  <Feather name={item.icon} size={20} color={focused ? colors.white : colors.dirPrimary} style={styles.bottomNavChipIcon} />
+                  <Text style={[styles.bottomNavChipText, focused && styles.bottomNavChipTextActive]}>{item.label}</Text>
+                </Pressable>
+              )
+            })}
+          </ScrollView>
+        </View>
+      )
+    }
+    const extendedTabs = useMemo(() => {
+      if (bottomNavItems.length === 0) return []
+      const first = bottomNavItems[0]
+      const last = bottomNavItems[bottomNavItems.length - 1]
+      return [last, ...bottomNavItems, first]
+    }, [bottomNavItems])
+    const selectedIndex = Math.max(bottomNavItems.findIndex((item) => item.key === currentTab), 0)
+    const listRef = useRef<FlatList<typeof bottomNavItems[0]> | null>(null)
+    const centerOnIndex = useCallback(
+      (index: number, animated: boolean) => {
+        if (!listRef.current || extendedTabs.length === 0) return
+        listRef.current.scrollToOffset({ offset: index * itemWidth, animated })
+      },
+      [extendedTabs.length, itemWidth],
+    )
+
+    useEffect(() => {
+      if (extendedTabs.length === 0) return
+      centerOnIndex(selectedIndex + 1, false)
+    }, [extendedTabs.length, selectedIndex, centerOnIndex])
+
+    const handleMomentumEnd = useCallback(
+      (event: any) => {
+        if (bottomNavItems.length === 0 || extendedTabs.length === 0) return
+        const offsetX = event.nativeEvent.contentOffset.x
+        const rawIndex = Math.round(offsetX / itemWidth)
+        let normalizedIndex = rawIndex - 1
+        if (rawIndex <= 0) {
+          normalizedIndex = bottomNavItems.length - 1
+          centerOnIndex(bottomNavItems.length, false)
+        } else if (rawIndex >= extendedTabs.length - 1) {
+          normalizedIndex = 0
+          centerOnIndex(1, false)
+        }
+        if (normalizedIndex < 0) normalizedIndex = 0
+        if (normalizedIndex >= bottomNavItems.length) normalizedIndex = bottomNavItems.length - 1
+        const nextTab = bottomNavItems[normalizedIndex]
+        if (nextTab && nextTab.key !== currentTab) {
+          handleTabSelect(nextTab.key as TabRoute)
+        }
+      },
+      [bottomNavItems, currentTab, itemWidth, centerOnIndex, extendedTabs.length, handleTabSelect],
+    )
+
+    return (
+      <View style={[styles.bottomNav, isIOS ? styles.bottomNavIOS : styles.bottomNavAndroid]}>
+        <View style={styles.bottomNavCarousel}>
+          <FlatList
+            ref={listRef}
+            horizontal
+            data={extendedTabs}
+            keyExtractor={(_, index) => `nav-${index}`}
+            showsHorizontalScrollIndicator={false}
+            bounces={false}
+            decelerationRate="fast"
+            snapToInterval={itemWidth}
+            snapToAlignment="center"
+            contentContainerStyle={[styles.bottomNavScroll, { paddingHorizontal: horizontalPadding }]}
+            getItemLayout={(_, index) => ({ length: itemWidth, offset: itemWidth * index, index })}
+            initialScrollIndex={selectedIndex + 1}
+            onMomentumScrollEnd={handleMomentumEnd}
+            renderItem={({ item, index }) => {
+              const isSentinel = index === 0 || index === extendedTabs.length - 1
+              if (isSentinel) {
+                return <View style={[styles.bottomNavChip, { width: chipWidth, opacity: 0 }]} pointerEvents="none" />
+              }
+              const actualIndex = index - 1
+              const focused = currentTab === item.key
+              return (
+                <Pressable
+                  style={[styles.bottomNavChip, focused && styles.bottomNavChipActive, { width: chipWidth }]}
+                  accessibilityRole="button"
+                  accessibilityState={focused ? { selected: true } : undefined}
+                  onPress={() => {
+                    handleTabSelect(item.key as TabRoute)
+                    centerOnIndex(actualIndex + 1, true)
+                  }}
+                >
+                  <Feather name={item.icon} size={20} color={focused ? colors.white : colors.dirPrimary} style={styles.bottomNavChipIcon} />
+                  <Text style={[styles.bottomNavChipText, focused && styles.bottomNavChipTextActive]}>{item.label}</Text>
+                </Pressable>
+              )
+            }}
+          />
+        </View>
       </View>
     )
   }
@@ -637,30 +1213,6 @@ export default function App() {
     )
   }
 
-  function PTOView() {
-    return (
-      <View style={styles.settingsContainer}>
-        <View style={styles.contentCard}>
-          <Text style={styles.cardTitle}>Paid Time Off</Text>
-          <Text style={styles.cardSubtitle}>Track balances, approve requests, and communicate blackout dates.</Text>
-          <View style={styles.ptoGrid}>
-            <View style={styles.ptoCard}>
-              <Text style={styles.statLabel}>Requests</Text>
-              <Text style={styles.statValue}>0</Text>
-              <Text style={styles.statMeta}>Pending approval</Text>
-            </View>
-            <View style={styles.ptoCard}>
-              <Text style={styles.statLabel}>Balances</Text>
-              <Text style={styles.statValue}>Coming soon</Text>
-              <Text style={styles.statMeta}>Sync payroll to enable</Text>
-            </View>
-          </View>
-          <Text style={styles.subBrand}>Automated PTO workflows are in development.</Text>
-        </View>
-      </View>
-    )
-  }
-
   function TimeCardsView() {
     const defaultUser = users.find((u) => u.role === 'user')
     const initialSelection = auth?.role === 'user' ? auth.userId || defaultUser?.id || '' : defaultUser?.id || ''
@@ -715,11 +1267,11 @@ export default function App() {
       <View style={styles.settingsContainer}>
         <View style={styles.contentCard}>
           <View style={styles.cardHeader}>
-            <View>
+            <View style={styles.cardHeaderText}>
               <Text style={styles.cardTitle}>Time Cards</Text>
               <Text style={styles.cardSubtitle}>Weekly breakdown of hours, premiums, and punches.</Text>
             </View>
-            <Pressable style={styles.outlineBtn} onPress={exportCSV}>
+            <Pressable style={[styles.outlineBtn, styles.cardHeaderAction]} onPress={exportCSV}>
               <Text style={styles.outlineBtnText}>Export CSV</Text>
             </Pressable>
           </View>
@@ -772,8 +1324,8 @@ export default function App() {
             </View>
           </ScrollView>
           <View style={styles.signatureBlock}>
-            <Text style={styles.listTitle}>Employee Signature</Text>
-            <Text style={styles.subBrand}>I agree that this timecard is accurate and I have taken all required breaks.</Text>
+            <Text style={styles.signatureTitle}>Digital Certification</Text>
+            <Text style={styles.signatureText}>This record was generated by Babylon Tracker and reflects the latest punches and overrides. No wet signature required.</Text>
           </View>
         </View>
       </View>
@@ -866,76 +1418,35 @@ export default function App() {
     )
   }
 
+  if (booting) {
+    return <SplashScreen />
+  }
+
   if (!auth) {
     return <LoginView users={users} onAdminLogin={() => loginAs('admin')} onUserLogin={loginAsUser} />
   }
 
   return (
     <SafeAreaView style={styles.container}>
-      <View style={styles.navBar}>
-        <View style={styles.logoRow}>
-          <View style={styles.logoBadge}>
-            <Text style={styles.logoBadgeText}>BT</Text>
-          </View>
-          <View>
-            <Text style={styles.brand}>Babylon Tracker</Text>
-            <Text style={styles.subBrand}>Time, Overtime, and Attendance</Text>
-          </View>
-        </View>
-        <View style={styles.navActions}>
-          <Text style={styles.navRole}>Role: {auth.role}</Text>
-          <Pressable style={styles.navLogout} onPress={logout}>
-            <Text style={styles.btnText}>Logout</Text>
-          </Pressable>
-        </View>
-      </View>
-
-        <View style={styles.navTabsBar}>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.navTabsScroll}>
-            <View style={styles.tabsRow}>
-            <Pressable style={[styles.tabBtn, currentTab === 'dashboard' ? styles.tabActive : undefined]} onPress={() => setTab('dashboard')}>
-              <Text style={styles.tabText}>Dashboard</Text>
-            </Pressable>
-          {isAdmin && (
-            <Pressable style={[styles.tabBtn, currentTab === 'settings' ? styles.tabActive : undefined]} onPress={() => setTab('settings')}>
-              <Text style={styles.tabText}>Settings</Text>
-            </Pressable>
-          )}
-          {isAdmin && (
-            <Pressable style={[styles.tabBtn, currentTab === 'schedule' ? styles.tabActive : undefined]} onPress={() => setTab('schedule')}>
-              <Text style={styles.tabText}>Schedule</Text>
-            </Pressable>
-          )}
-          {isAdmin && (
-            <Pressable style={[styles.tabBtn, currentTab === 'myteam' ? styles.tabActive : undefined]} onPress={() => setTab('myteam')}>
-              <Text style={styles.tabText}>My Team</Text>
-            </Pressable>
-          )}
-          {isAdmin && (
-            <Pressable style={[styles.tabBtn, currentTab === 'directory' ? styles.tabActive : undefined]} onPress={() => setTab('directory')}>
-              <Text style={styles.tabText}>Team Directory</Text>
-            </Pressable>
-          )}
-          {isAdmin && (
-            <Pressable style={[styles.tabBtn, currentTab === 'whosin' ? styles.tabActive : undefined]} onPress={() => setTab('whosin')}>
-              <Text style={styles.tabText}>Who's In</Text>
-            </Pressable>
-          )}
-          {isAdmin && (
-            <Pressable style={[styles.tabBtn, currentTab === 'pto' ? styles.tabActive : undefined]} onPress={() => setTab('pto')}>
-              <Text style={styles.tabText}>PTO</Text>
-            </Pressable>
-          )}
-          {isAdmin && (
-            <Pressable style={[styles.tabBtn, currentTab === 'timecards' ? styles.tabActive : undefined]} onPress={() => setTab('timecards')}>
-              <Text style={styles.tabText}>Time Cards</Text>
-            </Pressable>
-            )}
+      <View style={styles.appShell}>
+        <View style={styles.navBar}>
+          <View style={styles.logoRow}>
+            <View style={styles.logoBadge}>
+              <Text style={styles.logoBadgeText}>BT</Text>
             </View>
-          </ScrollView>
+            <View>
+              <Text style={styles.brand}>Babylon Tracker</Text>
+              <Text style={styles.subBrand}>Time, Overtime, and Attendance</Text>
+            </View>
+          </View>
+          <View style={styles.navActions}>
+            <Pressable style={styles.navLogout} onPress={logout}>
+              <Text style={styles.btnText}>Logout</Text>
+            </Pressable>
+          </View>
         </View>
 
-      <ScrollView contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag">
+      <ScrollView contentContainerStyle={[styles.scrollContent, { paddingBottom: scrollPaddingBottom }]} keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag">
       {currentTab === 'dashboard' && (
       <View style={styles.statusCard}>
         <Text style={styles.statusLabel}>Status</Text>
@@ -974,6 +1485,16 @@ export default function App() {
       </View>
       )}
 
+      {viewerAssignment && (
+        <View style={styles.assignmentCard}>
+          <Text style={styles.assignmentTitle}>Today's Assignment</Text>
+          <Text style={styles.assignmentText}>
+            {viewerAssignment.shift || 'Shift TBD'} • {viewerAssignment.location || 'Location pending'}
+          </Text>
+          {viewerAssignmentName && <Text style={styles.assignmentMeta}>Assigned to {viewerAssignmentName}</Text>}
+        </View>
+      )}
+
       {isAdmin && currentTab === 'dashboard' && (
         <View style={styles.statusCard}>
           <View style={styles.metricsRow}>
@@ -998,7 +1519,7 @@ export default function App() {
               <Text style={styles.metricLabel}>+${paySummary.holidayExtraPay.toFixed(2)}</Text>
             </View>
           </View>
-          <View style={styles.ctaRow}>
+          <View style={[styles.ctaRow, styles.exportActionRow]}>
             <Pressable style={styles.btnCheckin} onPress={exportCSV}>
               <Text style={styles.btnText}>Export CSV</Text>
             </Pressable>
@@ -1025,13 +1546,10 @@ export default function App() {
           <View style={styles.listHeader}>
             <Text style={styles.listTitle}>Recent Sessions</Text>
           </View>
-          <FlatList
-            data={sessionsForCurrentUser}
-            keyExtractor={(item) => item.id}
-            renderItem={({ item }) => renderSession(item)}
-            contentContainerStyle={styles.sessionsList}
-          />
+          <View style={styles.sessionsList}>{sessionsForCurrentUser.map((item) => renderSession(item))}</View>
         </>
+      ) : !isAdmin && currentTab === 'profile' ? (
+        <ProfileView focus={profileFocus} />
       ) : isAdmin && currentTab === 'settings' ? (
         <AdminSettingsTab />
       ) : isAdmin && currentTab === 'schedule' ? (
@@ -1047,9 +1565,27 @@ export default function App() {
       ) : isAdmin && currentTab === 'timecards' ? (
         <TimeCardsView />
       ) : null}
-      
+
       </ScrollView>
+      </View>
+      <BottomNavigation />
       <StatusBar style="light" />
+    </SafeAreaView>
+  )
+}
+
+function SplashScreen() {
+  return (
+    <SafeAreaView style={styles.splashContainer}>
+      <View style={styles.splashLogo}>
+        <View style={styles.logoBadge}>
+          <Text style={styles.logoBadgeText}>BT</Text>
+        </View>
+        <View>
+          <Text style={styles.splashTitle}>Babylon Tracker</Text>
+          <Text style={styles.splashSubtitle}>Loading your workspace...</Text>
+        </View>
+      </View>
     </SafeAreaView>
   )
 }
@@ -1149,12 +1685,16 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: colors.bg,
   },
+  appShell: {
+    flex: 1,
+  },
   navBar: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 20,
-    paddingVertical: 16,
+    paddingHorizontal: 16,
+    paddingTop: Platform.OS === 'ios' ? 20 : (RNStatusBar.currentHeight ?? 20) + 8,
+    paddingBottom: 20,
     borderBottomWidth: 1,
     borderColor: '#E5E7EB',
     backgroundColor: colors.card,
@@ -1162,42 +1702,38 @@ const styles = StyleSheet.create({
   logoRow: {
     flexDirection: 'row',
     alignItems: 'center',
+    flexShrink: 1,
   },
   logoBadge: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
     backgroundColor: colors.dirPrimary,
     alignItems: 'center',
     justifyContent: 'center',
-    marginRight: 12,
+    marginRight: 10,
+    shadowColor: '#000000',
+    shadowOpacity: 0.15,
+    shadowRadius: 6,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 3,
   },
   logoBadgeText: {
     color: colors.white,
     fontWeight: '700',
+    fontSize: 18,
   },
   navActions: {
     flexDirection: 'row',
     alignItems: 'center',
   },
-  navRole: {
-    color: colors.muted,
-    marginRight: 12,
-  },
   navLogout: {
-    backgroundColor: colors.brandDark,
-    paddingVertical: 10,
-    paddingHorizontal: 20,
+    backgroundColor: colors.dirPrimary,
+    paddingVertical: 12,
+    paddingHorizontal: 18,
     borderRadius: 999,
-  },
-  navTabsBar: {
-    borderBottomWidth: 1,
-    borderColor: '#E5E7EB',
-    backgroundColor: colors.card,
-  },
-  navTabsScroll: {
-    paddingHorizontal: 20,
-    paddingVertical: 10,
+    minWidth: 104,
+    alignItems: 'center',
   },
   brand: {
     color: colors.text,
@@ -1255,35 +1791,11 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'center',
     paddingHorizontal: 20,
-    marginBottom: 8,
+    marginBottom: 16,
   },
-  tabsRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    paddingVertical: 4,
-  },
-  tabBtn: {
-    backgroundColor: colors.dirPrimary,
-    paddingHorizontal: 20,
-    height: 44,
-    borderRadius: 24,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  tabActive: {
-    backgroundColor: '#1b1b57',
-    shadowColor: '#000000',
-    shadowOpacity: 0.15,
-    shadowRadius: 6,
-    shadowOffset: { width: 0, height: 3 },
-    elevation: 2,
-  },
-  tabText: {
-    color: colors.white,
-    fontSize: 14,
-    fontWeight: '600',
-    textAlign: 'center',
+  exportActionRow: {
+    marginTop: 16,
+    marginBottom: 20,
   },
   loginContainer: {
     flex: 1,
@@ -1392,12 +1904,16 @@ const styles = StyleSheet.create({
     paddingVertical: 14,
     paddingHorizontal: 32,
     borderRadius: 999,
+    minWidth: 160,
+    alignItems: 'center',
   },
   btnCheckout: {
     backgroundColor: colors.dirPrimary,
     paddingVertical: 14,
     paddingHorizontal: 32,
     borderRadius: 999,
+    minWidth: 160,
+    alignItems: 'center',
   },
   btnText: {
     color: colors.white,
@@ -1505,13 +2021,15 @@ const styles = StyleSheet.create({
   },
   addUserActions: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
     justifyContent: 'flex-end',
     alignItems: 'center',
     marginTop: 8,
     marginBottom: 16,
+    gap: 12,
   },
   addUserActionSpacer: {
-    marginRight: 12,
+    marginRight: 0,
   },
   sectionTitle: {
     marginTop: 16,
@@ -1519,9 +2037,169 @@ const styles = StyleSheet.create({
   signatureBlock: {
     paddingHorizontal: 20,
     paddingVertical: 16,
+    marginTop: 12,
+    borderTopWidth: 1,
+    borderColor: '#E5E7EB',
+  },
+  signatureTitle: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: colors.textDark,
+  },
+  signatureText: {
+    color: colors.muted,
+    marginTop: 4,
+    lineHeight: 20,
+  },
+  assignmentCard: {
+    backgroundColor: '#EEF2FF',
+    marginHorizontal: 20,
+    marginBottom: 16,
+    padding: 16,
+    borderRadius: 16,
+  },
+  assignmentTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: colors.dirPrimary,
+  },
+  assignmentText: {
+    marginTop: 4,
+    color: colors.textDark,
+  },
+  assignmentMeta: {
+    marginTop: 2,
+    color: colors.muted,
+    fontSize: 12,
+  },
+  profileInfoRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginBottom: 8,
+  },
+  profileLabel: {
+    color: colors.muted,
+  },
+  profileValue: {
+    color: colors.textDark,
+    fontWeight: '600',
+    flexShrink: 0,
+  },
+  leaveReasonInput: {
+    minHeight: 80,
+    textAlignVertical: 'top',
+  },
+  profileAssignmentRow: {
+    paddingVertical: 6,
+  },
+  profileAssignmentDate: {
+    fontSize: 12,
+    color: colors.muted,
+  },
+  profileAssignmentText: {
+    fontWeight: '600',
+    color: colors.textDark,
   },
   scrollContent: {
     paddingBottom: 60,
+  },
+  bottomNav: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: colors.card,
+    paddingTop: 16,
+    overflow: 'hidden',
+  },
+  bottomNavIOS: {
+    borderTopWidth: 1,
+    borderColor: '#E5E7EB',
+    paddingBottom: 24,
+  },
+  bottomNavAndroid: {
+    borderTopWidth: 1,
+    borderColor: 'rgba(0,0,0,0.05)',
+    shadowColor: '#000000',
+    shadowOpacity: 0.08,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: -2 },
+    elevation: 8,
+    paddingBottom: 20,
+  },
+  bottomNavScroll: {
+    flexGrow: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+  },
+  bottomNavStaticRow: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    paddingVertical: 12,
+    gap: 12,
+  },
+  bottomNavCarousel: {
+    width: '100%',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  bottomNavChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderRadius: 999,
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+    backgroundColor: '#EEF2FF',
+    marginHorizontal: 8,
+  },
+  bottomNavChipActive: {
+    backgroundColor: colors.dirPrimary,
+    shadowColor: '#000000',
+    shadowOpacity: 0.15,
+    shadowRadius: 6,
+    shadowOffset: { width: 0, height: 3 },
+    elevation: 3,
+  },
+  bottomNavChipIcon: {
+    marginRight: 8,
+  },
+  bottomNavChipText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: colors.dirPrimary,
+  },
+  bottomNavChipTextActive: {
+    color: colors.white,
+  },
+  bottomNavSingle: {
+    width: '100%',
+    alignItems: 'center',
+    paddingVertical: 8,
+  },
+  splashContainer: {
+    flex: 1,
+    backgroundColor: colors.card,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  splashLogo: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 16,
+  },
+  splashTitle: {
+    fontSize: 22,
+    fontWeight: '700',
+    color: colors.textDark,
+  },
+  splashSubtitle: {
+    color: colors.muted,
+    marginTop: 4,
   },
   directoryContainer: {
     backgroundColor: colors.white,
@@ -1601,6 +2279,10 @@ const styles = StyleSheet.create({
   settingsContainer: {
     paddingHorizontal: 20,
     paddingBottom: 32,
+    gap: 16,
+    width: '100%',
+    maxWidth: 960,
+    alignSelf: 'center',
   },
   contentCard: {
     backgroundColor: colors.card,
@@ -1609,12 +2291,22 @@ const styles = StyleSheet.create({
     borderColor: '#E5E7EB',
     padding: 20,
     marginTop: 16,
+    width: '100%',
   },
   cardHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    alignItems: 'center',
+    alignItems: 'flex-start',
+    flexWrap: 'wrap',
+    gap: 12,
     marginBottom: 16,
+  },
+  cardHeaderText: {
+    flex: 1,
+    minWidth: 220,
+  },
+  cardHeaderAction: {
+    alignSelf: 'flex-start',
   },
   cardTitle: {
     color: colors.text,
@@ -1687,7 +2379,13 @@ const styles = StyleSheet.create({
   scheduleActions: {
     flexDirection: 'row',
     alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 12,
     marginBottom: 16,
+  },
+  schedulePublished: {
+    color: colors.muted,
+    marginBottom: 12,
   },
   scheduleActionSpacer: {
     marginRight: 12,
@@ -1728,6 +2426,30 @@ const styles = StyleSheet.create({
   scheduleAssignText: {
     color: colors.dirPrimary,
     fontWeight: '600',
+  },
+  assignForm: {
+    marginTop: 12,
+    width: '100%',
+    backgroundColor: '#F9FAFB',
+    padding: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+    gap: 10,
+  },
+  assignChips: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    paddingVertical: 4,
+  },
+  assignActions: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    gap: 12,
+  },
+  assignActionSpacer: {
+    marginRight: 0,
   },
   cardGrid: {
     flexDirection: 'row',
@@ -1813,6 +2535,19 @@ const styles = StyleSheet.create({
     flexWrap: 'wrap',
     marginBottom: 16,
   },
+  ptoSummaryGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 12,
+    marginBottom: 16,
+  },
+  ptoSummaryCard: {
+    flex: 1,
+    minWidth: 150,
+    backgroundColor: '#EEF2FF',
+    borderRadius: 12,
+    padding: 16,
+  },
   ptoCard: {
     width: '48%',
     backgroundColor: '#F9FAFB',
@@ -1820,6 +2555,58 @@ const styles = StyleSheet.create({
     padding: 16,
     borderWidth: 1,
     borderColor: '#E5E7EB',
+  },
+  ptoRequestForm: {
+    marginBottom: 16,
+    gap: 8,
+  },
+  ptoRequestSubmit: {
+    alignSelf: 'flex-start',
+    marginTop: 8,
+  },
+  ptoRequestList: {
+    gap: 12,
+  },
+  ptoRequestRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+    borderRadius: 12,
+    padding: 12,
+  },
+  ptoRequestName: {
+    fontWeight: '600',
+    color: colors.textDark,
+  },
+  ptoRequestMeta: {
+    color: colors.muted,
+    fontSize: 12,
+  },
+  ptoRequestStatus: {
+    alignItems: 'flex-end',
+  },
+  ptoRequestActions: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 6,
+  },
+  ptoStatusPill: {
+    paddingHorizontal: 14,
+    paddingVertical: 6,
+    borderRadius: 999,
+    color: colors.white,
+    fontWeight: '600',
+  },
+  ptoPending: {
+    backgroundColor: '#F59E0B',
+  },
+  ptoApproved: {
+    backgroundColor: colors.dirPrimary,
+  },
+  ptoDenied: {
+    backgroundColor: colors.early,
   },
   formRow: {
     flexDirection: 'row',
@@ -1926,6 +2713,12 @@ async function exportPayrollCSV() {
   } catch (e) {
     Alert.alert('Export failed', 'Unable to generate payroll CSV')
   }
+}
+
+function weekDaysAgo(days: number) {
+  const date = new Date()
+  date.setDate(date.getDate() - days)
+  return date.toISOString().slice(0, 10)
 }
 
 const globalSessionsRef: { sessions: WorkSession[]; rules: RulesConfig } = { sessions: [], rules: defaultRules }
